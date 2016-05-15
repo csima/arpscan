@@ -1,0 +1,14 @@
+# define a whitelist of mac addresses. 
+# this list is what is used for email alerts
+# to get a list run arpscan with the command param './arpscan -output mac'
+#interface: en0
+whitelist:
+# - 00:00:00:00:00:00
+email:
+ enabled: false
+ username: user
+ password: password
+ to: joe@joe.com
+ server: smtp.gmail.com
+ port: 587
+ frequency: 1 # how frequent the new device report is emailed in hours
