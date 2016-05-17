@@ -50,6 +50,7 @@ var devices = make(map[string]Device)
 var macs = make(map[string]Manufacturer)
 var outputMac = false
 var config Config
+var mutex = &sync.Mutex{}
 
 func main() {
 	outputArg := flag.String("output","default", "specify what is displayed. valid options are 'mac,default'")
@@ -57,7 +58,8 @@ func main() {
 
 	loadManufacturerDB()
 	loadConfig()
-
+	printWhitelist()
+	
 	if config.Email["enabled"] == "true" {
 		go cron()
 	}
@@ -114,7 +116,10 @@ func cron() {
 		log.Println("Error parsing frequency value from arpscan.yaml")
 		freq = 8
 	}
+
 	gocron.Every(freq).Hours().Do(sendEmailAlert)
+	//gocron.Every(1).Minute().Do(sendEmailAlert)
+
 	<- gocron.Start()
 }
 
@@ -152,8 +157,6 @@ func grabAddress(iface *net.Interface) (net.IPNet, error) {
 // it's ever unable to write a packet.
 func scan(iface *net.Interface, addr *net.IPNet) error {
 	// We just look for IPv4 addresses, so try to find if the interface has one.
-
-
 	// Open up a pcap handle for packet reads/writes.
 	handle, err := pcap.OpenLive(iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
@@ -169,9 +172,10 @@ func scan(iface *net.Interface, addr *net.IPNet) error {
 	for {
 		
 		for k,v := range devices {
+			mutex.Lock()
 			lastDevices[k] = v
+			mutex.Unlock()
 		}
-		devices = make(map[string]Device)
 
 		// I'm looping multiple times here and sending 2 broadcast arps because
 		// of the responses & devices being unreliable. 
@@ -214,7 +218,9 @@ func printAlert() {
 		if stringInSlice(device.Mac.Mac, config.Whitelist) == false {
 			alert := fmt.Sprintf("new device detected: %s %s '%s : %s'", device.Ip, device.Mac.Mac, device.Mac.Description, device.Name)
 			log.Println(alert)
+			mutex.Lock()
 			newDevices[device.Mac.Mac] = device
+			mutex.Unlock()
 		}
 	}	
 }
@@ -223,14 +229,14 @@ func sendEmailAlert() {
 	data := ""
 	if len(newDevices) > 0 {
 		for _,device := range newDevices {
-			alert := fmt.Sprintf("%s new device detected: %s %s '%s : %s'", time.Now().Local(), device.Ip, device.Mac.Mac, device.Mac.Description, device.Name)
+			alert := fmt.Sprintf("%s - new device detected: %s %s '%s : %s'", device.Timestamp.Format("1/2/2006 Mon 3:04pm"), device.Ip, device.Mac.Mac, device.Mac.Description, device.Name)
 			data = data + alert + "\r\n"
 		}
 		
-		send("New Device Report", data)
+		log.Printf("Sending email with %d unknown devices\r\n", len(newDevices))
+		log.Println(data)
 		
-		// Clear out the newDevices log
-		newDevices = make(map[string]Device)
+		send("New Device Report", data)
 	}
 }
 
@@ -243,8 +249,10 @@ func printMacAddrs() {
 }
 
 func printDevices() {
+	dateLayout := "1/2/2006 Mon 3:04pm"
+    
 	for _,device := range devices {
-		log.Printf("IP %s is at %s '%s : %s'", device.Ip, device.Mac.Mac, device.Mac.Description, device.Name)
+		log.Printf("IP %s is at %s '%s : %s' last seen: %s", device.Ip, device.Mac.Mac, device.Mac.Description, device.Name, device.Timestamp.Format(dateLayout))
 	}	
 	log.Printf("Total Devices: %d", len(devices))
 	log.Printf("Last Total Devices: %d", len(lastDevices))
@@ -263,6 +271,14 @@ func printDevices() {
 			alert := fmt.Sprintf("device offline: %s %s '%s : %s'", device.Ip, device.Mac.Mac, device.Mac.Description, device.Name)
 			log.Println(alert)
 		}
+	}
+}
+
+func printWhitelist() {
+	log.Printf("%d total devices whitelisted:", len(config.Whitelist))
+	for _, device := range config.Whitelist {
+		manuf := grabManufacturer(device[:8])
+		fmt.Println(device + " '" + manuf.Description + "'")
 	}
 }
 
@@ -288,13 +304,6 @@ func loadManufacturerDB() {
 }
 
 func loadConfig() {
-	/*
-	yamlFile, err := os.Open("arpscan.yaml")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer yamlFile.Close()*/
-    
 	filename, _ := filepath.Abs("arpscan.yaml")
     yamlFile, err := ioutil.ReadFile(filename)
 
@@ -369,7 +378,9 @@ func readARP(handle *pcap.Handle, iface *net.Interface, stop chan struct{}) {
 			macaddr := net.HardwareAddr(arp.SourceHwAddress).String()
 			mac := grabManufacturer(macaddr[:8])
 			mac.Mac = macaddr
+			mutex.Lock()
 			devices[macaddr] = Device{Name: nslookup(net.IP(arp.SourceProtAddress).String()), Ip: net.IP(arp.SourceProtAddress).String(), Timestamp: time.Now(), Mac: mac}
+			mutex.Unlock()
 		}
 	}
 }
